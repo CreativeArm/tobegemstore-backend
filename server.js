@@ -28,6 +28,15 @@ const allowedOrigins = new Set(
   ),
 );
 
+const isAllowedVercelOrigin = (origin) => {
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return protocol === "https:" && hostname.endsWith(".vercel.app");
+  } catch {
+    return false;
+  }
+};
+
 // Security Middleware
 app.use(helmet());
 app.use(
@@ -38,7 +47,10 @@ app.use(
       }
 
       const normalizedOrigin = origin.replace(/\/$/, "");
-      if (allowedOrigins.has(normalizedOrigin)) {
+      if (
+        allowedOrigins.has(normalizedOrigin) ||
+        isAllowedVercelOrigin(normalizedOrigin)
+      ) {
         return callback(null, true);
       }
 
