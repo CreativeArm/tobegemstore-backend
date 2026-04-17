@@ -20,6 +20,9 @@ const sendEmail = async (to, subject, html) => {
   });
 };
 
+const getFrontendUrl = () =>
+  (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+
 // @route   POST /api/auth/register
 router.post('/register', asyncHandler(async (req, res) => {
   const { firstName, lastName, email, password, phone } = req.body;
@@ -100,7 +103,7 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
   const resetToken = user.getResetPasswordToken();
   await user.save({ validateBeforeSave: false });
 
-  const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+  const resetUrl = `${getFrontendUrl()}/reset-password/${resetToken}`;
 
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">

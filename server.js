@@ -14,11 +14,36 @@ const userRoutes = require("./routes/users");
 
 const app = express();
 
+const parseOrigins = (...values) =>
+  values
+    .flatMap((value) => (value || "").split(","))
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+
+const allowedOrigins = new Set(
+  parseOrigins(
+    process.env.FRONTEND_URL,
+    process.env.FRONTEND_URLS,
+    "http://localhost:3000,http://localhost:5173",
+  ),
+);
+
 // Security Middleware
 app.use(helmet());
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin(origin, callback) {
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      const normalizedOrigin = origin.replace(/\/$/, "");
+      if (allowedOrigins.has(normalizedOrigin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
   }),
 );
