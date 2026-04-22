@@ -3,6 +3,7 @@ const router = express.Router();
 const asyncHandler = require('express-async-handler');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const { generateToken, protect } = require('../middleware/auth');
 
@@ -23,6 +24,27 @@ const sendEmail = async (to, subject, html) => {
 const getFrontendUrl = () =>
   (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
+const googleClient = new OAuth2Client();
+
+const serializeUser = (user) => ({
+  id: user._id,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  email: user.email,
+  role: user.role,
+  phone: user.phone,
+  avatar: user.avatar,
+  authProvider: user.authProvider
+});
+
+const splitName = (name = '') => {
+  const [firstName = 'Google', ...rest] = name.trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName,
+    lastName: rest.join(' ') || 'User'
+  };
+};
+
 // @route   POST /api/auth/register
 router.post('/register', asyncHandler(async (req, res) => {
   const { firstName, lastName, email, password, phone } = req.body;
@@ -35,7 +57,11 @@ router.post('/register', asyncHandler(async (req, res) => {
   const userExists = await User.findOne({ email });
   if (userExists) {
     res.status(400);
-    throw new Error('Email already registered');
+    throw new Error(
+      userExists.authProvider === 'google'
+        ? 'This email is registered with Google. Please continue with Google.'
+        : 'Email already registered'
+    );
   }
 
   const user = await User.create({ firstName, lastName, email, password, phone });
@@ -45,13 +71,7 @@ router.post('/register', asyncHandler(async (req, res) => {
     success: true,
     message: 'Registration successful! Welcome to TobegemStore.',
     token,
-    user: {
-      id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      role: user.role
-    }
+    user: serializeUser(user)
   });
 }));
 
@@ -65,6 +85,11 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   const user = await User.findOne({ email }).select('+password');
+  if (user && !user.password && user.authProvider === 'google') {
+    res.status(400);
+    throw new Error('This account uses Google sign-in. Please continue with Google.');
+  }
+
   if (!user || !(await user.matchPassword(password))) {
     res.status(401);
     throw new Error('Invalid email or password');
@@ -79,14 +104,77 @@ router.post('/login', asyncHandler(async (req, res) => {
     success: true,
     message: 'Login successful',
     token,
-    user: {
-      id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      role: user.role,
-      phone: user.phone
+    user: serializeUser(user)
+  });
+}));
+
+// @route   POST /api/auth/google
+router.post('/google', asyncHandler(async (req, res) => {
+  const { credential } = req.body;
+
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    res.status(500);
+    throw new Error('Google sign-in is not configured');
+  }
+
+  if (!credential) {
+    res.status(400);
+    throw new Error('Google credential is required');
+  }
+
+  const ticket = await googleClient.verifyIdToken({
+    idToken: credential,
+    audience: process.env.GOOGLE_CLIENT_ID
+  });
+
+  const payload = ticket.getPayload();
+  if (!payload?.email || !payload.sub) {
+    res.status(400);
+    throw new Error('Unable to verify Google account');
+  }
+
+  if (!payload.email_verified) {
+    res.status(400);
+    throw new Error('Google email address is not verified');
+  }
+
+  let user = await User.findOne({
+    $or: [{ googleId: payload.sub }, { email: payload.email.toLowerCase() }]
+  }).select('+password');
+
+  if (!user) {
+    const { firstName, lastName } = splitName(payload.name);
+    user = await User.create({
+      firstName,
+      lastName,
+      email: payload.email.toLowerCase(),
+      googleId: payload.sub,
+      authProvider: 'google',
+      avatar: payload.picture || '',
+      isEmailVerified: true
+    });
+  } else {
+    user.googleId = payload.sub;
+    user.authProvider = 'google';
+    user.isEmailVerified = true;
+    if (!user.avatar && payload.picture) user.avatar = payload.picture;
+    if (!user.firstName || !user.lastName) {
+      const { firstName, lastName } = splitName(payload.name);
+      user.firstName = user.firstName || firstName;
+      user.lastName = user.lastName || lastName;
     }
+  }
+
+  user.lastLogin = new Date();
+  await user.save({ validateBeforeSave: false });
+
+  const token = generateToken(user._id);
+
+  res.json({
+    success: true,
+    message: 'Google sign-in successful',
+    token,
+    user: serializeUser(user)
   });
 }));
 
@@ -159,6 +247,11 @@ router.put('/reset-password/:token', asyncHandler(async (req, res) => {
 router.put('/change-password', protect, asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const user = await User.findById(req.user._id).select('+password');
+
+  if (!user.password) {
+    res.status(400);
+    throw new Error('This account uses Google sign-in. Use Forgot Password to set an email password first.');
+  }
 
   if (!(await user.matchPassword(currentPassword))) {
     res.status(400);

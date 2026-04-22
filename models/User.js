@@ -20,9 +20,18 @@ const userSchema = new mongoose.Schema({
     lowercase: true,
     match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Invalid email']
   },
-  password: { type: String, required: [true, 'Password is required'], minlength: 6, select: false },
+  password: {
+    type: String,
+    minlength: 6,
+    select: false,
+    required: function() {
+      return this.authProvider !== 'google';
+    }
+  },
   phone: { type: String, trim: true },
   avatar: { type: String, default: '' },
+  authProvider: { type: String, enum: ['local', 'google'], default: 'local' },
+  googleId: { type: String, index: true, sparse: true },
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
   addresses: [addressSchema],
   defaultAddress: { type: mongoose.Schema.Types.ObjectId },
@@ -38,7 +47,7 @@ const userSchema = new mongoose.Schema({
 
 // Hash password before save
 userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password') || !this.password) return next();
   const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
   next();
@@ -46,6 +55,7 @@ userSchema.pre('save', async function(next) {
 
 // Match password
 userSchema.methods.matchPassword = async function(enteredPassword) {
+  if (!this.password) return false;
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
